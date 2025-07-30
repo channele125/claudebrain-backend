@@ -1,40 +1,48 @@
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const axios = require('axios');
+require('dotenv').config();
 
-dotenv.config();
 const app = express();
+const port = process.env.PORT || 3000;
+
 app.use(cors());
 app.use(express.json());
 
-app.post('/api/claude', async (req, res) => {
-  const { message, persona } = req.body;
+// 👋 Welcome message on GET /
+app.get('/', (req, res) => {
+  res.send('🤖 ClaudeBrain API is live. Use POST /ask to talk to Claude!');
+});
 
-  const personas = {
-    ani: "You are Ani, a sarcastic hacker with dark humor and high IQ.",
-    valentine: "You are Valentine, charming, kind, and eloquent.",
-    dev: "You are DevClaude, a technical Solana dev AI assistant."
-  };
+app.post('/ask', async (req, res) => {
+  const { message } = req.body;
 
   try {
-    const response = await axios.post("https://api.anthropic.com/v1/messages", {
-      model: "claude-3-sonnet-20240229",
-      max_tokens: 800,
-      system: personas[persona] || personas.dev,
-      messages: [{ role: "user", content: message }]
-    }, {
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01"
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-3-sonnet-20240229',
+        max_tokens: 1024,
+        temperature: 0.7,
+        messages: [{ role: 'user', content: message }],
+      },
+      {
+        headers: {
+          'x-api-key': process.env.CLAUDE_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
       }
-    });
+    );
 
-    res.json({ reply: response.data?.content?.[0]?.text || "[No reply]" });
-  } catch (err) {
-    res.status(500).json({ error: "Claude API call failed." });
+    const claudeReply = response.data.content[0]?.text || '(No reply)';
+    res.json({ reply: claudeReply });
+  } catch (error) {
+    console.error('❌ Error communicating with Claude:', error.message);
+    res.status(500).json({ error: 'Claude API request failed.' });
   }
 });
 
-app.listen(3000, () => console.log("Claude proxy running on port 3000"));
+app.listen(port, () => {
+  console.log(`🚀 Claude proxy running on port ${port}`);
+});
