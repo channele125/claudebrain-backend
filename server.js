@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const https = require('https');
 
 const app = express();
 const port = process.env.PORT || 10000;
@@ -17,6 +18,38 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Helper function to make HTTPS requests (instead of fetch)
+function makeApiRequest(options, postData) {
+    return new Promise((resolve, reject) => {
+        const req = https.request(options, (res) => {
+            let data = '';
+            
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(data);
+                    resolve({ status: res.statusCode, data: parsed, rawData: data });
+                } catch (error) {
+                    resolve({ status: res.statusCode, data: null, rawData: data });
+                }
+            });
+        });
+        
+        req.on('error', (error) => {
+            reject(error);
+        });
+        
+        if (postData) {
+            req.write(postData);
+        }
+        
+        req.end();
+    });
+}
+
 // Basic route
 app.get('/', (req, res) => {
     res.json({ 
@@ -24,7 +57,8 @@ app.get('/', (req, res) => {
         status: 'active',
         timestamp: new Date().toISOString(),
         endpoints: ['GET /', 'GET /api/health', 'POST /api/generate'],
-        claudeReady: !!ANTHROPIC_API_KEY
+        claudeReady: !!ANTHROPIC_API_KEY,
+        nodeVersion: process.version
     });
 });
 
@@ -33,18 +67,21 @@ app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        claudeReady: !!ANTHROPIC_API_KEY
+        claudeReady: !!ANTHROPIC_API_KEY,
+        nodeVersion: process.version
     });
 });
 
 // Main Claude integration endpoint
 app.post('/api/generate', async (req, res) => {
     try {
-        console.log('Received request:', req.body);
+        console.log('=== NEW REQUEST ===');
+        console.log('Received request body:', JSON.stringify(req.body, null, 2));
         
         const { message, context } = req.body;
         
         if (!message) {
+            console.log('ERROR: No message provided');
             return res.status(400).json({ 
                 error: 'Message is required',
                 received: req.body 
@@ -53,11 +90,17 @@ app.post('/api/generate', async (req, res) => {
 
         // Check if API key is available
         if (!ANTHROPIC_API_KEY) {
+            console.log('ERROR: No API key configured');
             return res.status(500).json({
                 error: 'Claude AI not configured',
                 message: 'ANTHROPIC_API_KEY environment variable is missing'
             });
         }
+
+        console.log('API key available:', ANTHROPIC_API_KEY ? 'YES' : 'NO');
+        console.log('API key length:', ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.length : 0);
+        console.log('API key starts with:', ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.substring(0, 20) + '...' : 'N/A');
+        console.log('Processing message:', message.substring(0, 100) + '...');
 
         // Enhanced prompt for Solana/Web3 development
         const systemPrompt = `You are Claude Brain, an advanced AI assistant specializing in Solana blockchain development and full-stack web3 applications. You exist in the "infinite backrooms" of code generation.
@@ -85,63 +128,89 @@ Format your responses with clear explanations and working code examples.`;
             fullMessage += `\n\n[Context: User has wallet ${context.wallet} connected]`;
         }
 
-        // Call Anthropic API
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
+        // Prepare request data
+        const requestBody = JSON.stringify({
+            model: 'claude-opus-4-20250514',
+            max_tokens: 4000,
+            temperature: 0.7,
+            system: systemPrompt,
+            messages: [
+                {
+                    role: 'user',
+                    content: fullMessage
+                }
+            ]
+        });
+
+        // Configure HTTPS request options
+        const options = {
+            hostname: 'api.anthropic.com',
+            port: 443,
+            path: '/v1/messages',
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01'
-            },
-            body: JSON.stringify({
-                model: 'claude-3-sonnet-20240229',
-                max_tokens: 4000,
-                temperature: 0.7,
-                system: systemPrompt,
-                messages: [
-                    {
-                        role: 'user',
-                        content: fullMessage
-                    }
-                ]
-            })
-        });
+                'anthropic-version': '2023-06-01',
+                'Content-Length': Buffer.byteLength(requestBody)
+            }
+        };
 
-        if (!response.ok) {
-            const errorData = await response.text();
-            console.error('Anthropic API Error:', response.status, errorData);
+        console.log('Making request to Anthropic API...');
+        
+        // Make API request
+        const apiResponse = await makeApiRequest(options, requestBody);
+        
+        console.log('API Response status:', apiResponse.status);
+        
+        if (apiResponse.status !== 200) {
+            console.error('API Error:', apiResponse.status, apiResponse.rawData);
             
-            if (response.status === 401) {
+            if (apiResponse.status === 401) {
                 return res.status(500).json({
                     error: 'Claude AI authentication failed',
                     message: 'Invalid API key'
                 });
-            } else if (response.status === 429) {
+            } else if (apiResponse.status === 429) {
                 return res.status(429).json({
                     error: 'Rate limit exceeded',
                     message: 'Too many requests. Please try again later.'
                 });
             } else {
-                throw new Error(`Anthropic API error: ${response.status}`);
+                return res.status(500).json({
+                    error: 'Anthropic API error',
+                    message: `API returned status ${apiResponse.status}`,
+                    details: apiResponse.rawData
+                });
             }
         }
 
-        const data = await response.json();
-        const claudeResponse = data.content[0].text;
+        if (!apiResponse.data || !apiResponse.data.content) {
+            console.error('Invalid API response:', apiResponse.data);
+            return res.status(500).json({
+                error: 'Invalid response from Claude API',
+                details: 'No content in response'
+            });
+        }
 
-        console.log('Claude response received successfully');
+        const claudeResponse = apiResponse.data.content[0].text;
+        console.log('Claude response received, length:', claudeResponse.length);
 
         res.json({
             response: claudeResponse,
             context: {
                 timestamp: new Date().toISOString(),
                 requestCount: (context?.requestCount || 0) + 1,
-                model: 'claude-3-sonnet-20240229'
+                model: 'claude-opus-4-20250514'
             }
         });
 
+        console.log('=== REQUEST COMPLETED SUCCESSFULLY ===');
+
     } catch (error) {
-        console.error('Error in /api/generate:', error);
+        console.error('=== ERROR IN /api/generate ===');
+        console.error('Error details:', error);
+        console.error('Error stack:', error.stack);
         
         res.status(500).json({ 
             error: 'Internal server error',
@@ -157,7 +226,8 @@ app.get('/api/test', (req, res) => {
     res.json({ 
         message: 'Test endpoint working!',
         timestamp: new Date().toISOString(),
-        claudeReady: !!ANTHROPIC_API_KEY
+        claudeReady: !!ANTHROPIC_API_KEY,
+        nodeVersion: process.version
     });
 });
 
@@ -178,7 +248,9 @@ app.use('*', (req, res) => {
 
 // Error handling middleware
 app.use((error, req, res, next) => {
-    console.error('Unhandled error:', error);
+    console.error('=== UNHANDLED ERROR ===');
+    console.error('Error:', error);
+    console.error('Stack:', error.stack);
     res.status(500).json({ 
         error: 'Something went wrong!',
         message: error.message,
@@ -188,6 +260,7 @@ app.use((error, req, res, next) => {
 
 app.listen(port, '0.0.0.0', () => {
     console.log(`Claude Brain Backend running on port ${port}`);
+    console.log(`Node.js version: ${process.version}`);
     console.log(`Claude AI Ready: ${!!ANTHROPIC_API_KEY}`);
     console.log(`Available endpoints:`);
     console.log(`  GET  /`);
