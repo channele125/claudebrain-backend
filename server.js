@@ -130,8 +130,8 @@ Format your responses with clear explanations and working code examples.`;
 
         // Prepare request data
         const requestBody = JSON.stringify({
-            model: 'claude-opus-4-20250514',
-            max_tokens: 4000,
+            model: 'claude-3-5-haiku-20241022',
+            max_tokens: 2000, // Reduced for faster responses
             temperature: 0.7,
             system: systemPrompt,
             messages: [
@@ -201,7 +201,7 @@ Format your responses with clear explanations and working code examples.`;
             context: {
                 timestamp: new Date().toISOString(),
                 requestCount: (context?.requestCount || 0) + 1,
-                model: 'claude-opus-4-20250514'
+                model: 'claude-3-5-haiku-20241022'
             }
         });
 
